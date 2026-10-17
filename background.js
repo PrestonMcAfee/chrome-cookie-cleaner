@@ -25,6 +25,7 @@ const WHITELIST = new Set([
   "sfbaycoffee.com",
   "starlink.com",
   "tripit.com",
+  "ui.com",
   "united.com",
   "ups.com",
   "usps.com",
