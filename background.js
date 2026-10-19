@@ -17,6 +17,7 @@ const WHITELIST = new Set([
   "la28.org",
   "linkedin.com",
   "mc4f.ee",
+  "mcafee.cc",
   "mcafeefamily.net",
   "microsoft.com",
   "nytimes.com",
@@ -33,6 +34,8 @@ const WHITELIST = new Set([
   "walmart.com",
   "youtube.com"
 ]);
+
+const SWEEP_ALARM = "hourly_cookie_sweep";
 
 function normalizeDomain(domain) {
   if (!domain) return "";
@@ -63,8 +66,9 @@ function getDomainFromUrl(urlString) {
   }
 }
 
-chrome.tabs.onRemoved.addListener(async (tabId, removeInfo) => {
-  // 1. Gather all currently open domains across all tabs and windows
+// Master cleanup routine
+async function cleanDeadCookies() {
+  // 1. Gather all domains currently visible across any open tab
   const openTabs = await chrome.tabs.query({});
   const activeDomains = new Set();
   
@@ -75,20 +79,18 @@ chrome.tabs.onRemoved.addListener(async (tabId, removeInfo) => {
     }
   }
 
-  // 2. Fetch all cookies (including partitioned ones)
+  // 2. Scan all stored cookies (including partitioned)
   const allCookies = await chrome.cookies.getAll({ partitionKey: {} });
   const deadDomains = new Set();
 
   for (const cookie of allCookies) {
     const cookieDomain = normalizeDomain(cookie.domain);
     
-    // Check if the cookie belongs to a partitioned top-level site
     let topLevelSiteDomain = null;
     if (cookie.partitionKey && cookie.partitionKey.topLevelSite) {
       topLevelSiteDomain = getDomainFromUrl(cookie.partitionKey.topLevelSite);
     }
 
-    // If partitioned under a non-whitelisted site that is no longer open, delete it
     const isPartitionDead = topLevelSiteDomain && 
                             !isWhitelisted(topLevelSiteDomain) && 
                             ![...activeDomains].some(active => matchesDomainOrSubdomain(active, topLevelSiteDomain));
@@ -109,7 +111,6 @@ chrome.tabs.onRemoved.addListener(async (tabId, removeInfo) => {
     deadDomains.add(cookieDomain);
     if (topLevelSiteDomain) deadDomains.add(topLevelSiteDomain);
 
-    // Build removal parameters
     const protocol = cookie.secure ? "https://" : "http://";
     const path = cookie.path.startsWith("/") ? cookie.path : "/" + cookie.path;
     const url = `${protocol}${cookieDomain}${path}`;
@@ -131,7 +132,7 @@ chrome.tabs.onRemoved.addListener(async (tabId, removeInfo) => {
     }
   }
 
-  // 3. Clear lingering site data (LocalStorage, IndexedDB, Cache) for closed origins
+  // 3. Sweep LocalStorage/IndexedDB for origins no longer open
   for (const domain of deadDomains) {
     if (isWhitelisted(domain)) continue;
 
@@ -147,5 +148,39 @@ chrome.tabs.onRemoved.addListener(async (tabId, removeInfo) => {
         webSQL: true
       }
     );
+  }
+}
+
+// Ensure the hourly alarm exists
+function registerAlarm() {
+  chrome.alarms.get(SWEEP_ALARM, (alarm) => {
+    if (!alarm) {
+      chrome.alarms.create(SWEEP_ALARM, { periodInMinutes: 60 });
+    }
+  });
+}
+
+// Trigger points:
+// 1. On tab close
+chrome.tabs.onRemoved.addListener((tabId, removeInfo) => {
+  cleanDeadCookies();
+});
+
+// 2. On browser startup
+chrome.runtime.onStartup.addListener(() => {
+  registerAlarm();
+  cleanDeadCookies();
+});
+
+// 3. On install or extension reload
+chrome.runtime.onInstalled.addListener(() => {
+  registerAlarm();
+  cleanDeadCookies();
+});
+
+// 4. On recurring alarm tick
+chrome.alarms.onAlarm.addListener((alarm) => {
+  if (alarm.name === SWEEP_ALARM) {
+    cleanDeadCookies();
   }
 });
