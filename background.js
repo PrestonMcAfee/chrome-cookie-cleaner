@@ -17,7 +17,6 @@ const WHITELIST = new Set([
   "la28.org",
   "linkedin.com",
   "mc4f.ee",
-  "mcafee.cc",
   "mcafeefamily.net",
   "microsoft.com",
   "nytimes.com",
@@ -66,9 +65,24 @@ function getDomainFromUrl(urlString) {
   }
 }
 
-// Master cleanup routine
-async function cleanDeadCookies() {
-  // 1. Gather all domains currently visible across any open tab
+// Record domains when visited to ensure site storage is cleaned even if zero cookies are written
+chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
+  if (tab.url) {
+    const domain = getDomainFromUrl(tab.url);
+    if (domain && !isWhitelisted(domain)) {
+      const data = await chrome.storage.local.get("trackedOrigins");
+      const trackedOrigins = new Set(data.trackedOrigins || []);
+      if (!trackedOrigins.has(domain)) {
+        trackedOrigins.add(domain);
+        await chrome.storage.local.set({ trackedOrigins: [...trackedOrigins] });
+      }
+    }
+  }
+});
+
+// Main cleanup execution
+async function cleanDeadCookiesAndStorage() {
+  // 1. Gather all currently open web domains across all browser windows
   const openTabs = await chrome.tabs.query({});
   const activeDomains = new Set();
   
@@ -79,9 +93,10 @@ async function cleanDeadCookies() {
     }
   }
 
-  // 2. Scan all stored cookies (including partitioned)
+  // 2. Fetch all cookies (including partitioned)
   const allCookies = await chrome.cookies.getAll({ partitionKey: {} });
   const deadDomains = new Set();
+  let cookieDeleteCount = 0;
 
   for (const cookie of allCookies) {
     const cookieDomain = normalizeDomain(cookie.domain);
@@ -112,8 +127,9 @@ async function cleanDeadCookies() {
     if (topLevelSiteDomain) deadDomains.add(topLevelSiteDomain);
 
     const protocol = cookie.secure ? "https://" : "http://";
-    const path = cookie.path.startsWith("/") ? cookie.path : "/" + cookie.path;
-    const url = `${protocol}${cookieDomain}${path}`;
+    const rawDomain = cookie.domain.startsWith(".") ? cookie.domain.slice(1) : cookie.domain;
+    const cleanPath = cookie.path.startsWith("/") ? cookie.path : "/" + cookie.path;
+    const url = `${protocol}${rawDomain}${cleanPath}`;
 
     const removeDetails = {
       url: url,
@@ -126,19 +142,44 @@ async function cleanDeadCookies() {
     }
 
     try {
-      await chrome.cookies.remove(removeDetails);
-    } catch (err) {
-      // Ignore stale handles
-    }
+      const res = await chrome.cookies.remove(removeDetails);
+      if (res) {
+        cookieDeleteCount++;
+      } else if (!cookie.secure) {
+        removeDetails.url = `http://${rawDomain}${cleanPath}`;
+        await chrome.cookies.remove(removeDetails);
+      }
+    } catch (e) {}
   }
 
-  // 3. Sweep LocalStorage/IndexedDB for origins no longer open
-  for (const domain of deadDomains) {
+  // 3. Merge dead cookie domains with tracked visited domains
+  const storedData = await chrome.storage.local.get("trackedOrigins");
+  const trackedOrigins = new Set(storedData.trackedOrigins || []);
+  const allTargets = new Set([...deadDomains, ...trackedOrigins]);
+  const survivingTracked = [];
+
+  for (const domain of allTargets) {
     if (isWhitelisted(domain)) continue;
 
+    // Check if domain is still active in any open tab
+    const isOpen = [...activeDomains].some(
+      active => matchesDomainOrSubdomain(active, domain) || matchesDomainOrSubdomain(domain, active)
+    );
+
+    if (isOpen) {
+      survivingTracked.push(domain);
+      continue;
+    }
+
+    // Purge site storage (LocalStorage, IndexedDB, Service Workers, Cache)
     chrome.browsingData.remove(
       {
-        origins: [`https://${domain}`, `http://${domain}`]
+        origins: [
+          `https://${domain}`,
+          `http://${domain}`,
+          `https://www.${domain}`,
+          `http://www.${domain}`
+        ]
       },
       {
         cache: true,
@@ -149,9 +190,13 @@ async function cleanDeadCookies() {
       }
     );
   }
+
+  // Persist only the origins that remain active
+  await chrome.storage.local.set({ trackedOrigins: survivingTracked });
+
+  console.log(`[Cleaner] Cycle complete: removed ${cookieDeleteCount} cookies. Purged storage for non-whitelisted closed origins.`);
 }
 
-// Ensure the hourly alarm exists
 function registerAlarm() {
   chrome.alarms.get(SWEEP_ALARM, (alarm) => {
     if (!alarm) {
@@ -160,27 +205,10 @@ function registerAlarm() {
   });
 }
 
-// Trigger points:
-// 1. On tab close
-chrome.tabs.onRemoved.addListener((tabId, removeInfo) => {
-  cleanDeadCookies();
-});
-
-// 2. On browser startup
-chrome.runtime.onStartup.addListener(() => {
-  registerAlarm();
-  cleanDeadCookies();
-});
-
-// 3. On install or extension reload
-chrome.runtime.onInstalled.addListener(() => {
-  registerAlarm();
-  cleanDeadCookies();
-});
-
-// 4. On recurring alarm tick
+// Listeners
+chrome.tabs.onRemoved.addListener(() => cleanDeadCookiesAndStorage());
+chrome.runtime.onStartup.addListener(() => { registerAlarm(); cleanDeadCookiesAndStorage(); });
+chrome.runtime.onInstalled.addListener(() => { registerAlarm(); cleanDeadCookiesAndStorage(); });
 chrome.alarms.onAlarm.addListener((alarm) => {
-  if (alarm.name === SWEEP_ALARM) {
-    cleanDeadCookies();
-  }
+  if (alarm.name === SWEEP_ALARM) cleanDeadCookiesAndStorage();
 });
