@@ -1,12 +1,17 @@
 const WHITELIST = new Set([
   "aa.com",
+  "akamai.com",
+  "akamaized.net",
   "amazon.com",
   "ambientweather.net",
   "arstechnica.com",
-  "cvs.com",
   "cloudflare.com",
+  "cvs.com",
   "delta.com",
+  "edgekey.net",
+  "edgesuite.net",
   "enphaseenergy.com",
+  "fastly.net",
   "fedex.com",
   "github.com",
   "gmail.com",
@@ -33,6 +38,16 @@ const WHITELIST = new Set([
   "walmart.com",
   "youtube.com"
 ]);
+
+// Common WAF / Anti-bot edge verification token prefixes (Akamai, Cloudflare, etc.)
+const SECURITY_COOKIE_PREFIXES = [
+  "_abck",
+  "ak_bmsc",
+  "bm_sz",
+  "bm_sv",
+  "cf_clearance",
+  "__cf_bm"
+];
 
 const SWEEP_ALARM = "hourly_cookie_sweep";
 
@@ -99,6 +114,11 @@ async function cleanDeadCookiesAndStorage() {
   let cookieDeleteCount = 0;
 
   for (const cookie of allCookies) {
+    // Preserve edge anti-bot validation cookies so sessions are not flagged as scrapers
+    if (SECURITY_COOKIE_PREFIXES.some(prefix => cookie.name.startsWith(prefix))) {
+      continue;
+    }
+
     const cookieDomain = normalizeDomain(cookie.domain);
     
     let topLevelSiteDomain = null;
