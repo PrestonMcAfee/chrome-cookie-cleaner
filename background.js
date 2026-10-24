@@ -1,43 +1,12 @@
-const WHITELIST = new Set([
-  "aa.com",
+// Baseline infrastructure domains essential for CDN edge routing & bot verification
+const ESSENTIAL_INFRASTRUCTURE_DOMAINS = [
   "akamai.com",
   "akamaized.net",
-  "amazon.com",
-  "ambientweather.net",
-  "arstechnica.com",
   "cloudflare.com",
-  "cvs.com",
-  "delta.com",
   "edgekey.net",
   "edgesuite.net",
-  "enphaseenergy.com",
-  "fastly.net",
-  "fedex.com",
-  "github.com",
-  "gmail.com",
-  "google.com",
-  "googleapis.com",
-  "homeassistant.local",
-  "imdb.com",
-  "la28.org",
-  "linkedin.com",
-  "mc4f.ee",
-  "mcafeefamily.net",
-  "microsoft.com",
-  "nytimes.com",
-  "phys.org",
-  "reddit.com",
-  "sfbaycoffee.com",
-  "starlink.com",
-  "tripit.com",
-  "ui.com",
-  "united.com",
-  "ups.com",
-  "usps.com",
-  "viwoods.com",
-  "walmart.com",
-  "youtube.com"
-]);
+  "fastly.net"
+];
 
 // Common WAF / Anti-bot edge verification token prefixes (Akamai, Cloudflare, etc.)
 const SECURITY_COOKIE_PREFIXES = [
@@ -48,6 +17,27 @@ const SECURITY_COOKIE_PREFIXES = [
   "cf_clearance",
   "__cf_bm"
 ];
+
+// Load the external user whitelist file into the service worker scope
+try {
+  importScripts("list.js");
+} catch (e) {
+  try {
+    importScripts("list.example.js");
+  } catch (err) {
+    console.warn("Neither list.js nor list.example.js could be loaded.", err);
+  }
+}
+
+// Fallback in case list.js failed to load or WHITELIST was undefined
+if (typeof WHITELIST === "undefined") {
+  globalThis.WHITELIST = new Set(["google.com", "github.com"]);
+}
+
+// Append the essential infrastructure domains to the active whitelist
+for (const domain of ESSENTIAL_INFRASTRUCTURE_DOMAINS) {
+  WHITELIST.add(domain);
+}
 
 const SWEEP_ALARM = "hourly_cookie_sweep";
 
@@ -68,6 +58,11 @@ function isWhitelisted(domain) {
     }
   }
   return false;
+}
+
+// Check if a cookie is an edge security / bot verification token
+function isSecurityCookie(cookieName) {
+  return SECURITY_COOKIE_PREFIXES.some(prefix => cookieName.startsWith(prefix));
 }
 
 function getDomainFromUrl(urlString) {
@@ -95,7 +90,7 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
   }
 });
 
-// Main cleanup execution
+// Master cleanup execution routine
 async function cleanDeadCookiesAndStorage() {
   // 1. Gather all currently open web domains across all browser windows
   const openTabs = await chrome.tabs.query({});
@@ -114,8 +109,8 @@ async function cleanDeadCookiesAndStorage() {
   let cookieDeleteCount = 0;
 
   for (const cookie of allCookies) {
-    // Preserve edge anti-bot validation cookies so sessions are not flagged as scrapers
-    if (SECURITY_COOKIE_PREFIXES.some(prefix => cookie.name.startsWith(prefix))) {
+    // Exemption A: Always preserve CDN / WAF bot verification tokens
+    if (isSecurityCookie(cookie.name)) {
       continue;
     }
 
@@ -131,8 +126,10 @@ async function cleanDeadCookiesAndStorage() {
                             ![...activeDomains].some(active => matchesDomainOrSubdomain(active, topLevelSiteDomain));
 
     if (!isPartitionDead) {
+      // Exemption B: Whitelisted domain (including essential CDN roots)
       if (isWhitelisted(cookieDomain)) continue;
 
+      // Exemption C: Domain is still open in an active tab
       let domainInUse = false;
       for (const active of activeDomains) {
         if (matchesDomainOrSubdomain(active, cookieDomain) || matchesDomainOrSubdomain(cookieDomain, active)) {
@@ -225,7 +222,7 @@ function registerAlarm() {
   });
 }
 
-// Listeners
+// Event Listeners
 chrome.tabs.onRemoved.addListener(() => cleanDeadCookiesAndStorage());
 chrome.runtime.onStartup.addListener(() => { registerAlarm(); cleanDeadCookiesAndStorage(); });
 chrome.runtime.onInstalled.addListener(() => { registerAlarm(); cleanDeadCookiesAndStorage(); });
