@@ -18,7 +18,22 @@ const SECURITY_COOKIE_PREFIXES = [
   "__cf_bm"
 ];
 
-// Load the external user whitelist file into the service worker scope
+// Content setting permission categories that leave 0-byte shells in Chrome
+const CONTENT_SETTING_TYPES = [
+  "cookies",
+  "images",
+  "javascript",
+  "popups",
+  "location",
+  "notifications",
+  "microphone",
+  "camera",
+  "automaticDownloads",
+  "midiSysex",
+  "clipboard"
+];
+
+// Load external whitelist
 try {
   importScripts("list.js");
 } catch (e) {
@@ -29,12 +44,10 @@ try {
   }
 }
 
-// Fallback in case list.js failed to load or WHITELIST was undefined
 if (typeof WHITELIST === "undefined") {
   globalThis.WHITELIST = new Set(["google.com", "github.com"]);
 }
 
-// Append the essential infrastructure domains to the active whitelist
 for (const domain of ESSENTIAL_INFRASTRUCTURE_DOMAINS) {
   WHITELIST.add(domain);
 }
@@ -74,41 +87,75 @@ function getDomainFromUrl(urlString) {
   }
 }
 
-// Record tab domains on update
-chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
-  if (tab.url) {
-    const domain = getDomainFromUrl(tab.url);
-    if (domain && !isWhitelisted(domain)) {
-      const data = await chrome.storage.local.get("trackedOrigins");
-      const trackedOrigins = new Set(data.trackedOrigins || []);
-      if (!trackedOrigins.has(domain)) {
-        trackedOrigins.add(domain);
-        await chrome.storage.local.set({ trackedOrigins: [...trackedOrigins] });
-      }
-    }
-  }
-});
+// Reset permission overrides that leave 0-byte tombstone rows
+async function clearNonWhitelistedPermissions(activeDomains) {
+  for (const type of CONTENT_SETTING_TYPES) {
+    if (!chrome.contentSettings || !chrome.contentSettings[type]) continue;
 
-// Master cleanup execution routine
+    try {
+      const rules = await chrome.contentSettings[type].getAll({});
+      for (const rule of rules) {
+        const pattern = rule.primaryPattern || "";
+        const domainMatch = pattern.match(/https?:\/\/(?:\[\*\.\])?([^\/:]+)/i);
+        if (!domainMatch) continue;
+
+        const domain = normalizeDomain(domainMatch[1]);
+        if (!domain || isWhitelisted(domain)) continue;
+
+        const isOpen = [...activeDomains].some(
+          active => matchesDomainOrSubdomain(active, domain) || matchesDomainOrSubdomain(domain, active)
+        );
+        if (isOpen) continue;
+
+        try {
+          const details = {
+            primaryPattern: rule.primaryPattern,
+            setting: "default",
+            scope: rule.scope || "regular"
+          };
+          if (rule.secondaryPattern) {
+            details.secondaryPattern = rule.secondaryPattern;
+          }
+          await chrome.contentSettings[type].set(details);
+        } catch (setErr) {}
+      }
+    } catch (e) {}
+  }
+}
+
+// Master cleanup routine
 async function cleanDeadCookiesAndStorage() {
-  // 1. Gather all currently open web domains across all browser windows
+  console.log("[Cleaner] Starting sweep cycle...");
+
   const openTabs = await chrome.tabs.query({});
   const activeDomains = new Set();
+  const safeOrigins = new Set();
   
   for (const tab of openTabs) {
     if (tab.url) {
       const domain = getDomainFromUrl(tab.url);
-      if (domain) activeDomains.add(domain);
+      if (domain) {
+        activeDomains.add(domain);
+        try {
+          const u = new URL(tab.url);
+          safeOrigins.add(u.origin);
+        } catch {}
+      }
     }
   }
 
-  // 2. Fetch all cookies (including partitioned)
+  for (const domain of WHITELIST) {
+    safeOrigins.add(`https://${domain}`);
+    safeOrigins.add(`http://${domain}`);
+    safeOrigins.add(`https://www.${domain}`);
+    safeOrigins.add(`http://www.${domain}`);
+  }
+
   const allCookies = await chrome.cookies.getAll({ partitionKey: {} });
   const deadDomains = new Set();
   let cookieDeleteCount = 0;
 
   for (const cookie of allCookies) {
-    // Preserve edge security / bot verification tokens
     if (isSecurityCookie(cookie.name)) {
       continue;
     }
@@ -120,21 +167,13 @@ async function cleanDeadCookiesAndStorage() {
       topLevelSiteDomain = getDomainFromUrl(cookie.partitionKey.topLevelSite);
     }
 
-    const isPartitionDead = topLevelSiteDomain && 
-                            !isWhitelisted(topLevelSiteDomain) && 
-                            ![...activeDomains].some(active => matchesDomainOrSubdomain(active, topLevelSiteDomain));
+    const isDomainActive = [...activeDomains].some(
+      active => matchesDomainOrSubdomain(active, cookieDomain) || matchesDomainOrSubdomain(cookieDomain, active)
+    );
+    const isWhitelistedDomain = isWhitelisted(cookieDomain);
 
-    if (!isPartitionDead) {
-      if (isWhitelisted(cookieDomain)) continue;
-
-      let domainInUse = false;
-      for (const active of activeDomains) {
-        if (matchesDomainOrSubdomain(active, cookieDomain) || matchesDomainOrSubdomain(cookieDomain, active)) {
-          domainInUse = true;
-          break;
-        }
-      }
-      if (domainInUse) continue;
+    if (isWhitelistedDomain || isDomainActive) {
+      continue;
     }
 
     deadDomains.add(cookieDomain);
@@ -160,52 +199,57 @@ async function cleanDeadCookiesAndStorage() {
       if (res) {
         cookieDeleteCount++;
       } else {
-        // Fallback for protocol mismatches or 0-byte host cookies
         removeDetails.url = `http://${rawDomain}${cleanPath}`;
         await chrome.cookies.remove(removeDetails);
       }
     } catch (e) {}
   }
 
-  // 3. Merge dead cookie domains with tracked visited domains
-  const storedData = await chrome.storage.local.get("trackedOrigins");
-  const trackedOrigins = new Set(storedData.trackedOrigins || []);
-  const allTargets = new Set([...deadDomains, ...trackedOrigins]);
-  const survivingTracked = [];
-
-  for (const domain of allTargets) {
+  // 1. Explicit targeted browsingData purge for all discovered dead cookie domains
+  for (const domain of deadDomains) {
     if (isWhitelisted(domain)) continue;
-
-    const isOpen = [...activeDomains].some(
-      active => matchesDomainOrSubdomain(active, domain) || matchesDomainOrSubdomain(domain, active)
-    );
-
-    if (isOpen) {
-      survivingTracked.push(domain);
-      continue;
-    }
-
-    // Build exhaustive origin variants including www and bare domains
     const baseDomain = domain.startsWith("www.") ? domain.slice(4) : domain;
-    const originsToPurge = [
+    const purgeTargets = [
       `https://${baseDomain}`,
       `http://${baseDomain}`,
       `https://www.${baseDomain}`,
       `http://www.${baseDomain}`
     ];
     if (domain !== baseDomain && domain !== `www.${baseDomain}`) {
-      originsToPurge.push(`https://${domain}`, `http://${domain}`);
+      purgeTargets.push(`https://${domain}`, `http://${domain}`);
     }
 
-    // Comprehensive site data purge (covers consent engines & zero-byte residue)
-    chrome.browsingData.remove(
+    try {
+      await chrome.browsingData.remove(
+        { origins: purgeTargets },
+        {
+          cache: true,
+          cacheStorage: true,
+          cookies: true,
+          fileSystems: true,
+          indexedDB: true,
+          localStorage: true,
+          serviceWorkers: true,
+          webSQL: true
+        }
+      );
+    } catch (e) {}
+  }
+
+  // 2. Global fallback purge with safe origin shielding
+  try {
+    await chrome.browsingData.remove(
       {
-        origins: originsToPurge
+        excludeOrigins: Array.from(safeOrigins),
+        originTypes: {
+          unprotectedWeb: true,
+          protectedWeb: true
+        }
       },
       {
+        appcache: true,
         cache: true,
         cacheStorage: true,
-        cookies: true,
         fileSystems: true,
         indexedDB: true,
         localStorage: true,
@@ -213,24 +257,25 @@ async function cleanDeadCookiesAndStorage() {
         webSQL: true
       }
     );
+  } catch (err) {
+    console.error("[Cleaner] Global storage purge error:", err);
   }
 
-  await chrome.storage.local.set({ trackedOrigins: survivingTracked });
-  console.log(`[Cleaner] Cycle complete: removed ${cookieDeleteCount} cookies. Purged storage for non-whitelisted closed origins.`);
+  // 3. Purge custom permission entries
+  await clearNonWhitelistedPermissions(activeDomains);
+
+  console.log(`[Cleaner] Cycle complete: removed ${cookieDeleteCount} cookies. Purged storage for ${deadDomains.size} dead domains and reset permissions.`);
 }
 
-function registerAlarm() {
-  chrome.alarms.get(SWEEP_ALARM, (alarm) => {
-    if (!alarm) {
-      chrome.alarms.create(SWEEP_ALARM, { periodInMinutes: 60 });
-    }
-  });
+function ensureAlarm() {
+  chrome.alarms.create(SWEEP_ALARM, { periodInMinutes: 60 });
 }
 
-// Event Listeners
 chrome.tabs.onRemoved.addListener(() => cleanDeadCookiesAndStorage());
-chrome.runtime.onStartup.addListener(() => { registerAlarm(); cleanDeadCookiesAndStorage(); });
-chrome.runtime.onInstalled.addListener(() => { registerAlarm(); cleanDeadCookiesAndStorage(); });
+chrome.runtime.onStartup.addListener(() => { ensureAlarm(); cleanDeadCookiesAndStorage(); });
+chrome.runtime.onInstalled.addListener(() => { ensureAlarm(); cleanDeadCookiesAndStorage(); });
 chrome.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name === SWEEP_ALARM) cleanDeadCookiesAndStorage();
 });
+
+ensureAlarm();

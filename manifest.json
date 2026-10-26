@@ -1,14 +1,15 @@
 {
   "manifest_version": 3,
   "name": "Tab-Close Cookie Cleaner",
-  "version": "1.0",
-  "description": "Purges non-whitelisted cookies and site storage on tab close and hourly sweep.",
+  "version": "1.7",
+  "description": "Purges non-whitelisted cookies, site storage, and permissions on tab close and hourly sweep.",
   "permissions": [
     "cookies",
     "tabs",
     "browsingData",
     "alarms",
-    "storage"
+    "storage",
+    "contentSettings"
   ],
   "host_permissions": [
     "<all_urls>"
