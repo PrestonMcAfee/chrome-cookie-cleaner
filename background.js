@@ -151,7 +151,24 @@ async function cleanDeadCookiesAndStorage() {
     safeOrigins.add(`http://www.${domain}`);
   }
 
-  const allCookies = await chrome.cookies.getAll({ partitionKey: {} });
+  // Fetch BOTH unpartitioned standard cookies AND partitioned cookies
+  const standardCookies = await chrome.cookies.getAll({});
+  let partitionedCookies = [];
+  try {
+    partitionedCookies = await chrome.cookies.getAll({ partitionKey: {} });
+  } catch (e) {}
+
+  // Deduplicate cookies
+  const cookieMap = new Map();
+  for (const c of standardCookies) {
+    cookieMap.set(`${c.name}|${c.domain}|${c.path}|${c.storeId}`, c);
+  }
+  for (const c of partitionedCookies) {
+    const pKey = c.partitionKey?.topLevelSite || "";
+    cookieMap.set(`${c.name}|${c.domain}|${c.path}|${c.storeId}|${pKey}`, c);
+  }
+
+  const allCookies = Array.from(cookieMap.values());
   const deadDomains = new Set();
   let cookieDeleteCount = 0;
 
@@ -236,7 +253,7 @@ async function cleanDeadCookiesAndStorage() {
     } catch (e) {}
   }
 
-  // 2. Global fallback purge with safe origin shielding
+  // 2. Global fallback purge with safe origin shielding (now including cookies: true)
   try {
     await chrome.browsingData.remove(
       {
@@ -250,6 +267,7 @@ async function cleanDeadCookiesAndStorage() {
         appcache: true,
         cache: true,
         cacheStorage: true,
+        cookies: true,
         fileSystems: true,
         indexedDB: true,
         localStorage: true,
@@ -264,7 +282,7 @@ async function cleanDeadCookiesAndStorage() {
   // 3. Purge custom permission entries
   await clearNonWhitelistedPermissions(activeDomains);
 
-  console.log(`[Cleaner] Cycle complete: removed ${cookieDeleteCount} cookies. Purged storage for ${deadDomains.size} dead domains and reset permissions.`);
+  console.log(`[Cleaner] Cycle complete: evaluated ${allCookies.length} total cookies, deleted ${cookieDeleteCount} non-whitelisted cookies. Purged storage for ${deadDomains.size} dead domains and reset permissions.`);
 }
 
 function ensureAlarm() {
