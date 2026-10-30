@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Tab-Close Cookie Cleaner",
-  "version": "2.0",
+  "version": "2.1",
   "description": "Automatically purges non-whitelisted cookies, local storage, cache, and site permissions on tab close.",
   "permissions": [
     "cookies",
