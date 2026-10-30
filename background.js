@@ -178,18 +178,30 @@ async function cleanDeadCookiesAndStorage() {
     }
 
     const cookieDomain = normalizeDomain(cookie.domain);
-    
     let topLevelSiteDomain = null;
     if (cookie.partitionKey && cookie.partitionKey.topLevelSite) {
       topLevelSiteDomain = getDomainFromUrl(cookie.partitionKey.topLevelSite);
     }
 
-    const isDomainActive = [...activeDomains].some(
-      active => matchesDomainOrSubdomain(active, cookieDomain) || matchesDomainOrSubdomain(cookieDomain, active)
-    );
-    const isWhitelistedDomain = isWhitelisted(cookieDomain);
+    // Partition-Aware Exemption Logic:
+    // If a cookie is partitioned under a third-party host (e.g. YouTube inside theeliteinstitute.net):
+    // The top-level site determines whether the cookie is kept, NOT the embedded iframe domain.
+    let shouldKeep = false;
+    if (topLevelSiteDomain) {
+      const isTopLevelActive = [...activeDomains].some(
+        active => matchesDomainOrSubdomain(active, topLevelSiteDomain) || matchesDomainOrSubdomain(topLevelSiteDomain, active)
+      );
+      const isTopLevelWhitelisted = isWhitelisted(topLevelSiteDomain);
+      shouldKeep = isTopLevelActive || isTopLevelWhitelisted;
+    } else {
+      const isDomainActive = [...activeDomains].some(
+        active => matchesDomainOrSubdomain(active, cookieDomain) || matchesDomainOrSubdomain(cookieDomain, active)
+      );
+      const isWhitelistedDomain = isWhitelisted(cookieDomain);
+      shouldKeep = isDomainActive || isWhitelistedDomain;
+    }
 
-    if (isWhitelistedDomain || isDomainActive) {
+    if (shouldKeep) {
       continue;
     }
 
@@ -253,7 +265,7 @@ async function cleanDeadCookiesAndStorage() {
     } catch (e) {}
   }
 
-  // 2. Global fallback purge with safe origin shielding (now including cookies: true)
+  // 2. Global fallback purge with safe origin shielding
   try {
     await chrome.browsingData.remove(
       {
