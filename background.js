@@ -18,7 +18,7 @@ const SECURITY_COOKIE_PREFIXES = [
   "__cf_bm"
 ];
 
-// Content setting permission categories that leave 0-byte shells in Chrome
+// Full suite of permissions that leave 0-byte shells in chrome://settings/content/all
 const CONTENT_SETTING_TYPES = [
   "cookies",
   "images",
@@ -30,29 +30,47 @@ const CONTENT_SETTING_TYPES = [
   "camera",
   "automaticDownloads",
   "midiSysex",
-  "clipboard"
+  "clipboard",
+  "sound",
+  "protectedContent"
 ];
 
-// Load external whitelist
-try {
-  importScripts("list.js");
-} catch (e) {
-  try {
-    importScripts("list.example.js");
-  } catch (err) {
-    console.warn("Neither list.js nor list.example.js could be loaded.", err);
-  }
-}
+const DEFAULT_WHITELIST = [
+  "aa.com",
+  "amazon.com",
+  "ambientweather.net",
+  "arstechnica.com",
+  "cvs.com",
+  "delta.com",
+  "enphaseenergy.com",
+  "fedex.com",
+  "github.com",
+  "gmail.com",
+  "google.com",
+  "googleapis.com",
+  "homeassistant.local",
+  "imdb.com",
+  "la28.org",
+  "linkedin.com",
+  "mc4f.ee",
+  "mcafeefamily.net",
+  "microsoft.com",
+  "nytimes.com",
+  "phys.org",
+  "reddit.com",
+  "sfbaycoffee.com",
+  "starlink.com",
+  "tripit.com",
+  "ui.com",
+  "united.com",
+  "ups.com",
+  "usps.com",
+  "viwoods.com",
+  "walmart.com",
+  "youtube.com"
+];
 
-if (typeof WHITELIST === "undefined") {
-  globalThis.WHITELIST = new Set(["google.com", "github.com"]);
-}
-
-for (const domain of ESSENTIAL_INFRASTRUCTURE_DOMAINS) {
-  WHITELIST.add(domain);
-}
-
-const SWEEP_ALARM = "hourly_cookie_sweep";
+let ACTIVE_WHITELIST = new Set();
 
 function normalizeDomain(domain) {
   if (!domain) return "";
@@ -63,9 +81,34 @@ function matchesDomainOrSubdomain(targetDomain, baseDomain) {
   return targetDomain === baseDomain || targetDomain.endsWith("." + baseDomain);
 }
 
+// Synchronize whitelist from chrome.storage.sync
+async function refreshWhitelist() {
+  const nextSet = new Set();
+
+  try {
+    const data = await chrome.storage.sync.get("userWhitelist");
+    if (data.userWhitelist && Array.isArray(data.userWhitelist) && data.userWhitelist.length > 0) {
+      for (const d of data.userWhitelist) nextSet.add(normalizeDomain(d));
+    } else {
+      for (const d of DEFAULT_WHITELIST) nextSet.add(normalizeDomain(d));
+      await chrome.storage.sync.set({ userWhitelist: DEFAULT_WHITELIST });
+    }
+  } catch (err) {
+    for (const d of DEFAULT_WHITELIST) nextSet.add(normalizeDomain(d));
+  }
+
+  for (const d of ESSENTIAL_INFRASTRUCTURE_DOMAINS) {
+    nextSet.add(d);
+  }
+
+  ACTIVE_WHITELIST = nextSet;
+}
+
+const SWEEP_ALARM = "hourly_cookie_sweep";
+
 function isWhitelisted(domain) {
   const clean = normalizeDomain(domain);
-  for (const allowed of WHITELIST) {
+  for (const allowed of ACTIVE_WHITELIST) {
     if (matchesDomainOrSubdomain(clean, allowed)) {
       return true;
     }
@@ -87,7 +130,7 @@ function getDomainFromUrl(urlString) {
   }
 }
 
-// Reset permission overrides that leave 0-byte tombstone rows
+// Eradicate custom permission rules and tombstone shells
 async function clearNonWhitelistedPermissions(activeDomains) {
   for (const type of CONTENT_SETTING_TYPES) {
     if (!chrome.contentSettings || !chrome.contentSettings[type]) continue;
@@ -107,6 +150,7 @@ async function clearNonWhitelistedPermissions(activeDomains) {
         );
         if (isOpen) continue;
 
+        // Reset rule to default to remove the explicit grant/block
         try {
           const details = {
             primaryPattern: rule.primaryPattern,
@@ -118,6 +162,11 @@ async function clearNonWhitelistedPermissions(activeDomains) {
           }
           await chrome.contentSettings[type].set(details);
         } catch (setErr) {}
+
+        // Also issue clear() on this setting type to prune unlinked tombstones
+        try {
+          await chrome.contentSettings[type].clear({ scope: rule.scope || "regular" });
+        } catch (clrErr) {}
       }
     } catch (e) {}
   }
@@ -125,6 +174,7 @@ async function clearNonWhitelistedPermissions(activeDomains) {
 
 // Master cleanup routine
 async function cleanDeadCookiesAndStorage() {
+  await refreshWhitelist();
   console.log("[Cleaner] Starting sweep cycle...");
 
   const openTabs = await chrome.tabs.query({});
@@ -144,21 +194,20 @@ async function cleanDeadCookiesAndStorage() {
     }
   }
 
-  for (const domain of WHITELIST) {
+  for (const domain of ACTIVE_WHITELIST) {
     safeOrigins.add(`https://${domain}`);
     safeOrigins.add(`http://${domain}`);
     safeOrigins.add(`https://www.${domain}`);
-    safeOrigins.add(`http://www.${domain}`);
+    safeOrigins.add(`http://${domain}`);
   }
 
-  // Fetch BOTH unpartitioned standard cookies AND partitioned cookies
+  // Fetch standard and partitioned cookies
   const standardCookies = await chrome.cookies.getAll({});
   let partitionedCookies = [];
   try {
     partitionedCookies = await chrome.cookies.getAll({ partitionKey: {} });
   } catch (e) {}
 
-  // Deduplicate cookies
   const cookieMap = new Map();
   for (const c of standardCookies) {
     cookieMap.set(`${c.name}|${c.domain}|${c.path}|${c.storeId}`, c);
@@ -183,9 +232,6 @@ async function cleanDeadCookiesAndStorage() {
       topLevelSiteDomain = getDomainFromUrl(cookie.partitionKey.topLevelSite);
     }
 
-    // Partition-Aware Exemption Logic:
-    // If a cookie is partitioned under a third-party host (e.g. YouTube inside theeliteinstitute.net):
-    // The top-level site determines whether the cookie is kept, NOT the embedded iframe domain.
     let shouldKeep = false;
     if (topLevelSiteDomain) {
       const isTopLevelActive = [...activeDomains].some(
@@ -234,7 +280,7 @@ async function cleanDeadCookiesAndStorage() {
     } catch (e) {}
   }
 
-  // 1. Explicit targeted browsingData purge for all discovered dead cookie domains
+  // 1. Explicit targeted browsingData purge for all discovered dead domains
   for (const domain of deadDomains) {
     if (isWhitelisted(domain)) continue;
     const baseDomain = domain.startsWith("www.") ? domain.slice(4) : domain;
@@ -291,14 +337,41 @@ async function cleanDeadCookiesAndStorage() {
     console.error("[Cleaner] Global storage purge error:", err);
   }
 
-  // 3. Purge custom permission entries
+  // 3. Purge custom permission entries and 0-byte shells
   await clearNonWhitelistedPermissions(activeDomains);
 
   console.log(`[Cleaner] Cycle complete: evaluated ${allCookies.length} total cookies, deleted ${cookieDeleteCount} non-whitelisted cookies. Purged storage for ${deadDomains.size} dead domains and reset permissions.`);
+  return { deleted: cookieDeleteCount, deadDomains: deadDomains.size };
 }
 
 function ensureAlarm() {
   chrome.alarms.create(SWEEP_ALARM, { periodInMinutes: 60 });
+}
+
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message.action === "whitelist_updated") {
+    refreshWhitelist();
+    sendResponse({ status: "updated" });
+  } else if (message.action === "get_active_whitelist") {
+    refreshWhitelist().then(() => {
+      const userList = Array.from(ACTIVE_WHITELIST).filter(
+        d => !ESSENTIAL_INFRASTRUCTURE_DOMAINS.includes(d)
+      );
+      sendResponse({ whitelist: userList });
+    });
+    return true;
+  } else if (message.action === "trigger_sweep") {
+    cleanDeadCookiesAndStorage().then((res) => {
+      sendResponse({ status: "complete", ...res });
+    });
+    return true;
+  }
+});
+
+if (chrome.action && chrome.action.onClicked) {
+  chrome.action.onClicked.addListener(() => {
+    chrome.runtime.openOptionsPage();
+  });
 }
 
 chrome.tabs.onRemoved.addListener(() => cleanDeadCookiesAndStorage());
@@ -309,3 +382,4 @@ chrome.alarms.onAlarm.addListener((alarm) => {
 });
 
 ensureAlarm();
+refreshWhitelist();

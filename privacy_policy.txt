@@ -1,0 +1,16 @@
+Privacy Policy
+Effective Date: October 30, 2026
+
+Tab-Close Cookie Cleaner was developed with a strict privacy-first principle:
+
+No Data Collection or Transmission: The extension operates entirely offline on your local machine. It does not collect, log, track, or monitor any browsing history, personal data, credentials, or analytical telemetry.
+
+No Remote Servers: The extension maintains zero communication with external servers, tracking services, or third-party APIs.
+
+Storage Usage: The chrome.storage API is used exclusively to store your personal domain whitelist and is synchronized strictly within your own Google account via Chrome's native sync engine.
+
+Data Sale & Transfer: No data is ever sold, transferred, monetized, or shared with third parties.
+
+License
+MIT License. See LICENSE for details.
+EOF

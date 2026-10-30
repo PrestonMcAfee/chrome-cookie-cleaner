@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Tab-Close Cookie Cleaner Options</title>
+  <style>
+    :root {
+      --bg: #f8f9fa;
+      --card-bg: #ffffff;
+      --text: #202124;
+      --subtext: #5f6368;
+      --primary: #1a73e8;
+      --primary-hover: #1557b0;
+      --border: #dadce0;
+      --success: #1e8e3e;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #202124;
+        --card-bg: #292a2d;
+        --text: #e8eaed;
+        --subtext: #9aa0a6;
+        --primary: #8ab4f8;
+        --primary-hover: #aecbfa;
+        --border: #3c4043;
+        --success: #81c995;
+      }
+    }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      background-color: var(--bg);
+      color: var(--text);
+      margin: 0;
+      padding: 32px 16px;
+      display: flex;
+      justify-content: center;
+    }
+    .container {
+      width: 100%;
+      max-width: 680px;
+      background: var(--card-bg);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 24px 32px;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+    }
+    h1 {
+      font-size: 20px;
+      margin-top: 0;
+      margin-bottom: 8px;
+    }
+    p {
+      color: var(--subtext);
+      font-size: 14px;
+      line-height: 1.5;
+      margin-bottom: 20px;
+    }
+    textarea {
+      width: 100%;
+      height: 280px;
+      box-sizing: border-box;
+      padding: 12px;
+      font-family: monospace;
+      font-size: 13px;
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      background: var(--bg);
+      color: var(--text);
+      resize: vertical;
+      line-height: 1.4;
+    }
+    textarea:focus {
+      outline: 2px solid var(--primary);
+    }
+    .footer {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-top: 16px;
+    }
+    .btn-group {
+      display: flex;
+      gap: 12px;
+    }
+    button {
+      padding: 8px 16px;
+      font-size: 14px;
+      font-weight: 500;
+      border-radius: 4px;
+      cursor: pointer;
+      border: none;
+      transition: background 0.15s ease;
+    }
+    .btn-primary {
+      background: var(--primary);
+      color: #ffffff;
+    }
+    .btn-primary:hover {
+      background: var(--primary-hover);
+    }
+    .btn-secondary {
+      background: transparent;
+      border: 1px solid var(--border);
+      color: var(--text);
+    }
+    .btn-secondary:hover {
+      background: var(--border);
+    }
+    #status {
+      font-size: 13px;
+      font-weight: 500;
+      color: var(--success);
+      min-height: 18px;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>Allowed Sites (Whitelist)</h1>
+    <p>
+      Add domains you want to stay logged into (one per line, e.g. <code>google.com</code> or <code>github.com</code>).
+      Subdomains are protected automatically. Any non-whitelisted site will have cookies, storage, and permissions wiped when its tabs close.
+    </p>
+
+    <textarea id="whitelist" placeholder="google.com&#10;github.com&#10;amazon.com"></textarea>
+
+    <div class="footer">
+      <div id="status"></div>
+      <div class="btn-group">
+        <button id="manualSweepBtn" class="btn-secondary">Run Sweep Now</button>
+        <button id="saveBtn" class="btn-primary">Save Settings</button>
+      </div>
+    </div>
+  </div>
+  <script src="options.js"></script>
+</body>
+</html>
