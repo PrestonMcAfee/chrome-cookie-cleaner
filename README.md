@@ -1,8 +1,14 @@
 # Tab-Close Cookie Cleaner
 
-A fast, deterministic privacy extension for Google Chrome (Manifest V3) that systematically cleans non-whitelisted cookies, origin-bound site storage, and lingering permissions whenever unwhitelisted tabs close or on manual sweep.
+A fast, deterministic, absolutely private, extension for Google Chrome (Manifest V3) that systematically cleans non-whitelisted cookies, origin-bound site storage, and lingering permissions whenever unwhitelisted tabs close or on manual sweep.
 
-Its architecture mirrors the exact behavior of clicking the trash can icon on Chrome's native `chrome://settings/content/all` page for closed, non-whitelisted sites.
+Its architecture simulates the behavior of clicking the trash can icon on Chrome's native `chrome://settings/content/all` page for closed, non-whitelisted sites.
+
+As a practical matter, there are 32 sites I want to stay logged into.  Two months of browsing and Chrome will report 2500 sites have placed cookies on my PC, using nearly 2GB of storage (most of which was the New York Times, which seems to store entire issues as cookies).  Under Manifest V2, there were several extensions supporting the automatic elimination of undesired cookies, most or all of which were broken by V3.  So this little extension fixes that -- it takes your list of cookies that are permitted for long-term storage and eliminates the rest, either when you press the sweep button, or when the tabs that displayed the site close.  
+
+It is 100% private to you: it doesn't record your behavior and sends nothing to the internet.  All it does is shut down undesired storage.  
+
+Application for the chrome web store is currently pending.
 
 ---
 
@@ -79,13 +85,13 @@ chrome-cookie-cleaner/
 ## Usage
 
 ### Toolbar Popup
-Click the extension puzzle piece / icon in your toolbar:
+Click the extension cookie icon in your toolbar:
 - **⚙️ Edit Whitelist:** Opens the Options page in a new browser tab.
 - **🧹 Run Sweep Now:** Evaluates stored domains against open tabs and the whitelist, clearing all dead site storage and displaying the exact count of cleaned cookies and sites.
 
 ### Options Page
-- Enter registrable base domains you wish to stay logged into (one per line, e.g., `google.com`, `amazon.com`, `github.com`).
-- **Subdomain Protection:** Whitelisting `google.com` automatically protects `mail.google.com`, `docs.google.com`, etc.
+- Enter base domains (e.g. amazon.com) you wish to stay logged into (one per line, e.g., `google.com`, `amazon.com`, `github.com`).  There are few there to get you started but you may delete any whose cookies you don't want to persist.
+- **Subdomain Protection:** Whitelisting `google.com` automatically protects `mail.google.com`, `docs.google.com`, etc. but not gmail.com
 - **Cross-Device Sync:** Settings synchronize automatically across signed-in Chrome browsers using `chrome.storage.sync`.
 
 ---
