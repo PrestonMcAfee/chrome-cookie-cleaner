@@ -1,27 +1,46 @@
 # Tab-Close Cookie Cleaner
 
-A lightweight, automated privacy extension for Google Chrome (Manifest V3) that systematically purges non-whitelisted tracking cookies, origin-bound site storage, and lingering permission entries whenever tabs close or via periodic maintenance sweeps.
+A fast, deterministic privacy extension for Google Chrome (Manifest V3) that systematically cleans non-whitelisted cookies, origin-bound site storage, and lingering permissions whenever unwhitelisted tabs close or on manual sweep.
+
+Its architecture mirrors the exact behavior of clicking the trash can icon on Chrome's native `chrome://settings/content/all` page for closed, non-whitelisted sites.
 
 ---
 
-## Features
+## How It Works: The Three-List Model
 
-- **Automated Tab-Close Cleanup:** Immediately wipes non-whitelisted site data as soon as all open tabs for a given host are closed.
-- **Hourly Sweeps:** Periodically audits active tabs and sweeps dead session remnants in the background.
-- **Deep Origin Storage Purge:** Expunges `LocalStorage`, `IndexedDB`, `CacheStorage`, `Service Workers`, and `WebSQL` across untrusted origins.
-- **Tombstone & Ghost Entry Removal:** Resets custom content settings (`notifications`, `sound`, `protectedContent`, `popups`, etc.) to default, preventing empty 0-byte shells from cluttering `chrome://settings/content/all`.
-- **CHIPS & Partition-Aware:** Safely evicts third-party partitioned cookies (e.g., embedded YouTube players on non-whitelisted websites) once the host site closes, while preserving legitimate sessions on whitelisted platforms.
-- **WAF & Edge CDN Protection:** Built-in safeguards preserve Akamai and Cloudflare edge bot-defense tokens (`_abck`, `ak_bmsc`, `cf_clearance`, `__cf_bm`) to prevent false-positive access blocks on protected websites.
-- **Cloud Whitelist Sync:** Whitelist entries are managed via an Options UI and synchronized across signed-in browsers using `chrome.storage.sync`.
+The extension operates on a clean, deterministic three-list comparison:
+
+1. **List 1 (Whitelist):** User-defined allowed domains configured in the Options page and synced via `chrome.storage.sync`.
+2. **List 2 (Stored Domains):** Registrable root domains actively stored in Chrome, discovered dynamically by scanning all standard cookies, partitioned cookies (CHIPS), and permission overrides.
+3. **List 3 (Open Tab Domains):** Registrable root domains of all currently open browser tabs.
+
+### Event Triggers
+
+- **Tab Closure (`chrome.tabs.onRemoved`):**
+  - When an unwhitelisted tab closes, the extension waits **1000ms** to allow redirects, session handshakes, and tab states to settle.
+  - If no other open tab shares that registrable domain (List 3) and it is not on the user's whitelist (List 1), the extension performs a targeted purge on that domain.
+  - A secondary follow-up permission sweep runs at **5000ms** to clean late flushes from service workers, store locators, or sensors.
+- **Manual Sweep ("Run Sweep Now"):**
+  - Evaluates all stored domains in List 2.
+  - Any domain not present in List 1 (Whitelist) or List 3 (Active Open Tabs) is purged.
+  - Accurately reports the exact number of cookies and sites eliminated.
 
 ---
 
-## Manual Implementation & Local Setup
+## What Happens During a Purge?
 
-If you prefer to run or build the extension locally from source without using the Chrome Web Store:
+Purging a domain executes the exact programmatic equivalent of clicking the trash can in `chrome://settings/content/all`:
 
-### 1. File Structure
-Ensure your local project directory contains the following files:
+1. **Complete Storage and Cookie Purge:**
+   - Issues a scoped `chrome.browsingData.remove` across the target domain and origin variants (`https://`, `http://`, `https://www.`, `http://www.`).
+   - Evicts cookies, `LocalStorage`, `IndexedDB`, `CacheStorage`, `Service Workers`, `FileSystems`, and `WebSQL`.
+2. **Permission Reset & Ghost Row Cleanup:**
+   - Resets all custom permission overrides back to `default` across standard and modern content setting categories (`location`, `notifications`, `sensors`, `storageAccess`, `localFonts`, `idleDetection`, `windowManagement`, `camera`, `microphone`, `popups`, `sound`, etc.).
+   - Eliminates 0-byte ghost entries from cluttering Chrome's site settings.
+
+---
+
+## File Structure
 
 ```text
 chrome-cookie-cleaner/
@@ -38,67 +57,59 @@ chrome-cookie-cleaner/
 └── README.md
 ```
 
-### 2. Clone the Repository
-Clone the repository to your local system:
+---
 
-```bash
-git clone https://github.com/rpmcafee/chrome-cookie-cleaner.git ~/.local/share/chrome-cookie-cleaner
-cd ~/.local/share/chrome-cookie-cleaner
-```
+## Manual Installation & Setup
 
-### 3. Load into Google Chrome
-1. Open Google Chrome and navigate to `chrome://extensions/`.
-2. Turn on the **Developer mode** toggle located in the upper-right corner.
-3. Click the **Load unpacked** button in the upper-left corner.
-4. Select the `chrome-cookie-cleaner` directory (`~/.local/share/chrome-cookie-cleaner`).
-5. The extension will appear in your installed extensions list and register its background service worker immediately.
-
-### 4. Updating Local Code
-Whenever you pull updates or edit files locally:
-1. Open `chrome://extensions/`.
-2. Locate **Tab-Close Cookie Cleaner**.
-3. Click the circular **Reload** icon on the extension's card to re-initialize the service worker.
+1. **Clone or Download:**
+   ```bash
+   git clone https://github.com/rpmcafee/chrome-cookie-cleaner.git ~/.local/share/chrome-cookie-cleaner
+   cd ~/.local/share/chrome-cookie-cleaner
+   ```
+2. **Load in Chrome:**
+   - Open Chrome and navigate to `chrome://extensions/`.
+   - Enable **Developer mode** in the top-right corner.
+   - Click **Load unpacked** in the top-left corner.
+   - Select the `~/.local/share/chrome-cookie-cleaner` folder.
+3. **Applying Updates:**
+   - After editing or pulling changes, click the circular **Reload** icon on the extension's card in `chrome://extensions/`.
 
 ---
 
 ## Usage
 
 ### Toolbar Popup
-Click the extension icon in the Chrome toolbar:
-- **⚙️ Edit Whitelist:** Opens the dedicated settings page in a new browser tab.
-- **🧹 Run Sweep Now:** Triggers an immediate audit and cleanup cycle across all cookies and site storage.
+Click the extension puzzle piece / icon in your toolbar:
+- **⚙️ Edit Whitelist:** Opens the Options page in a new browser tab.
+- **🧹 Run Sweep Now:** Evaluates stored domains against open tabs and the whitelist, clearing all dead site storage and displaying the exact count of cleaned cookies and sites.
 
-### Options Page & Whitelist Configuration
-In the Options page, list the base domains you wish to stay logged into (one per line, e.g., `google.com`, `github.com`):
-- **Automatic Subdomain Shielding:** Entering `google.com` shields `mail.google.com`, `docs.google.com`, and all other subdomains.
-- **Edge Routing Infrastructure:** Essential CDN verification domains (`cloudflare.com`, `akamai.com`, `fastly.net`, etc.) are protected automatically to prevent site verification loops.
-- **Automatic Sync:** Click **Save Settings** to synchronize your whitelist across all Chrome browsers signed into your profile via `chrome.storage.sync`.
+### Options Page
+- Enter registrable base domains you wish to stay logged into (one per line, e.g., `google.com`, `amazon.com`, `github.com`).
+- **Subdomain Protection:** Whitelisting `google.com` automatically protects `mail.google.com`, `docs.google.com`, etc.
+- **Cross-Device Sync:** Settings synchronize automatically across signed-in Chrome browsers using `chrome.storage.sync`.
 
 ---
 
-## Permissions & Scope
+## Permissions
 
 | Permission | Purpose |
 | :--- | :--- |
-| `cookies` & `<all_urls>` | Allows reading and deleting non-whitelisted standard and partitioned cookies across visited websites once tabs close. |
-| `browsingData` | Allows clearing origin-bound storage (`LocalStorage`, `IndexedDB`, `CacheStorage`, `Service Workers`) for non-whitelisted hosts. |
-| `contentSettings` | Allows clearing custom site permission overrides to prevent empty 0-byte shell rows in Chrome settings. |
-| `storage` | Allows saving and synchronizing the user's whitelist across devices using `chrome.storage.sync`. |
-| `tabs` | Allows detecting active domains in open tabs so active browsing sessions are never interrupted. |
-| `alarms` | Allows scheduling periodic hourly sweeps to clean abandoned background storage. |
+| `cookies` & `<all_urls>` | Discovers stored domains and deletes non-whitelisted cookies. |
+| `browsingData` | Purges origin storage (`LocalStorage`, `IndexedDB`, `CacheStorage`, service workers) for unwhitelisted closed domains. |
+| `contentSettings` | Resets permissions to default to prevent 0-byte ghost entries in `chrome://settings/content/all`. |
+| `storage` | Persists and syncs the user's whitelist via `chrome.storage.sync`. |
+| `tabs` | Tracks domain presence across open tabs so active sessions are never interrupted. |
 
 ---
 
 ## Privacy Policy
 
-**Effective Date:** October 30, 2026
+**Effective Date:** October 31, 2026
 
-Tab-Close Cookie Cleaner operates under strict privacy-by-design standards:
-
-1. **Local Processing Only:** All evaluation and cleanup routines run entirely offline on your local machine. The extension never collects, records, monitors, or logs your browsing history, credentials, cookies, or personal data.
-2. **Zero Remote Telemetry:** The extension contains no tracking code, analytics libraries, or external network requests.
-3. **Storage Usage:** The `chrome.storage` API is used exclusively to store user-defined whitelisted domains and synchronizes solely via Google Chrome's native account sync engine.
-4. **No Data Monetization or Transfer:** No user data is ever sold, transferred, monetized, or shared with third parties.
+1. **100% Local Execution:** All evaluation and cleanup operations run locally in your browser. The extension never collects, monitors, transmits, or logs browsing history, cookies, or personal data.
+2. **No Analytics or Network Calls:** The extension makes zero remote network requests and contains no tracking libraries.
+3. **Storage Usage:** Chrome sync storage is used exclusively to store the user-defined whitelist.
+4. **No Data Monetization:** No user data is ever collected, sold, or shared.
 
 ---
 
