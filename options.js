@@ -54,11 +54,14 @@ async function saveWhitelist() {
 // Run an on-demand sweep
 sweepBtn.addEventListener("click", () => {
   showStatus("Running cleanup sweep...");
+  sweepBtn.disabled = true;
+
   chrome.runtime.sendMessage({ action: "trigger_sweep" }, (response) => {
+    sweepBtn.disabled = false;
     if (response && response.status === "complete") {
-      showStatus(`Sweep complete: removed ${response.deleted} cookies.`);
+      showStatus(`Cleaned ${response.deletedCookies} cookies across ${response.deletedSites} sites.`);
     } else {
-      showStatus("Sweep cycle triggered.");
+      showStatus("Sweep cycle complete.");
     }
   });
 });
