@@ -6,6 +6,14 @@ const ESSENTIAL_INFRASTRUCTURE_DOMAINS = [
   "edgekey.net",
   "edgesuite.net",
   "fastly.net"
+// Amazon Authentication, Assets & Anti-Bot Infrastructure
+  "amazon.com",
+  "media-amazon.com",
+  "images-amazon.com",
+  "ssl-images-amazon.com",
+  "a2z.com",
+  "cloudfront.net",
+  "amazonaws.com"
 ];
 
 // Common WAF / Anti-bot edge verification token prefixes (Akamai, Cloudflare, etc.)
