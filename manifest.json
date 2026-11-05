@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Tab-Close Cookie Cleaner",
-  "version": "2.1",
+  "version": "2.2",
   "description": "Purges non-whitelisted site cookies, storage, and permissions matching chrome://settings/content/all.",
   "permissions": [
     "cookies",

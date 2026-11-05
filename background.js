@@ -90,7 +90,6 @@ function trackTab(tabId, url) {
   } catch {}
 }
 
-// Initialize tracking for all existing tabs on worker startup
 async function initTabTracker() {
   const tabs = await chrome.tabs.query({});
   for (const tab of tabs) {
@@ -194,7 +193,7 @@ async function getList3_OpenTabDomains() {
           const base = getBaseDomain(u.hostname);
           if (base) {
             list3.add(base);
-            if (tab.id) tabDomainMap.set(tab.id, base); // Keep map synchronized
+            if (tab.id) tabDomainMap.set(tab.id, base);
           }
         }
       } catch {}
@@ -234,12 +233,41 @@ async function resetPermissionsForDomain(baseDomain) {
 }
 
 // -------------------------------------------------------------
+// Trim Bloated Caches for Whitelisted Sites (Preserves Cookies/Logins)
+// -------------------------------------------------------------
+async function trimWhitelistedCacheStorage(baseDomain) {
+  const targetOrigins = [
+    `https://${baseDomain}`,
+    `http://${baseDomain}`,
+    `https://www.${baseDomain}`,
+    `http://${baseDomain}`
+  ];
+
+  try {
+    await chrome.browsingData.remove(
+      { origins: targetOrigins },
+      {
+        cache: true,            // Clears cached assets/images
+        cacheStorage: true,     // Clears multi-gigabyte ServiceWorker caches
+        fileSystems: true,      // Clears origin private temp files
+        cookies: false,         // PRESERVES ALL AUTHENTICATION
+        localStorage: false,    // PRESERVES USER PREFERENCES
+        serviceWorkers: false,  // PRESERVES WORKER REGISTRATION
+        indexedDB: false        // PRESERVES OFFLINE APP STATE
+      }
+    );
+    return true;
+  } catch (e) {
+    return false;
+  }
+}
+
+// -------------------------------------------------------------
 // The "Trash Can" Action: Equivalent to chrome://settings/content/all trash can
 // -------------------------------------------------------------
 async function executeTrashCanForDomain(baseDomain) {
   let cookieCountForDomain = 0;
 
-  // Count cookies belonging to this base domain before wiping
   try {
     const allCookies = await chrome.cookies.getAll({});
     for (const c of allCookies) {
@@ -301,15 +329,23 @@ chrome.tabs.onRemoved.addListener((tabId) => {
 
   // Wait 1000ms to allow tab states to settle and page teardown to finish
   setTimeout(async () => {
-    const [list1, list3] = await Promise.all([
+    const [list1, list3, settings] = await Promise.all([
       getList1_Whitelist(),
-      getList3_OpenTabDomains()
+      getList3_OpenTabDomains(),
+      chrome.storage.sync.get("trimWhitelistedCache")
     ]);
 
-    // Only clean if it is NOT on the whitelist and NO OTHER open tab has this domain
+    // Case A: Unwhitelisted and fully closed -> Full Trash Can purge
     if (!list1.has(closedDomain) && !list3.has(closedDomain)) {
-      console.log(`[Cleaner] Tab closed: Purging targeted domain: ${closedDomain}`);
+      console.log(`[Cleaner] Tab closed: Purging unwhitelisted domain: ${closedDomain}`);
       await executeTrashCanForDomain(closedDomain);
+    } 
+    // Case B: Whitelisted, but all tabs for it are closed -> Trim multi-GB cache bloat
+    else if (list1.has(closedDomain) && !list3.has(closedDomain)) {
+      if (settings.trimWhitelistedCache !== false) {
+        console.log(`[Cleaner] Tab closed: Trimming CacheStorage for whitelisted domain: ${closedDomain}`);
+        await trimWhitelistedCacheStorage(closedDomain);
+      }
     }
   }, 1000);
 });
@@ -319,14 +355,16 @@ chrome.tabs.onRemoved.addListener((tabId) => {
 // -------------------------------------------------------------
 async function runEventSweep() {
   console.log("[Cleaner] Running targeted sweep...");
-  const [list1, list2, list3] = await Promise.all([
+  const [list1, list2, list3, settings] = await Promise.all([
     getList1_Whitelist(),
     getList2_StoredDomains(),
-    getList3_OpenTabDomains()
+    getList3_OpenTabDomains(),
+    chrome.storage.sync.get("trimWhitelistedCache")
   ]);
 
   let removedSites = 0;
   let removedCookies = 0;
+  let trimmedCaches = 0;
 
   for (const baseDomain of list2) {
     if (!baseDomain) continue;
@@ -338,14 +376,18 @@ async function runEventSweep() {
       const cookiesOnDomain = await executeTrashCanForDomain(baseDomain);
       removedCookies += cookiesOnDomain;
       removedSites++;
+    } else if (isWhitelisted && !isOpenInTab && settings.trimWhitelistedCache !== false) {
+      await trimWhitelistedCacheStorage(baseDomain);
+      trimmedCaches++;
     }
   }
 
-  console.log(`[Cleaner] Sweep finished. Processed ${list2.size} total sites, purged ${removedSites} dead sites (${removedCookies} cookies).`);
+  console.log(`[Cleaner] Sweep finished. Processed ${list2.size} total sites, purged ${removedSites} dead sites, trimmed ${trimmedCaches} whitelisted caches.`);
   return { 
     processed: list2.size, 
     deletedSites: removedSites, 
-    deletedCookies: removedCookies 
+    deletedCookies: removedCookies,
+    trimmedCaches: trimmedCaches
   };
 }
 
@@ -356,7 +398,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       sendResponse({ 
         status: "complete", 
         deletedSites: res.deletedSites, 
-        deletedCookies: res.deletedCookies 
+        deletedCookies: res.deletedCookies,
+        trimmedCaches: res.trimmedCaches
       });
     });
     return true;

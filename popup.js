@@ -25,14 +25,18 @@ document.addEventListener("DOMContentLoaded", () => {
 
         if (statusDiv) {
           if (response && response.status === "complete") {
-            statusDiv.textContent = `Cleaned ${response.deletedCookies} cookies across ${response.deletedSites} sites.`;
+            let msg = `Cleaned ${response.deletedCookies} cookies across ${response.deletedSites} sites.`;
+            if (response.trimmedCaches > 0) {
+              msg += ` Trimmed cache on ${response.trimmedCaches} whitelisted sites.`;
+            }
+            statusDiv.textContent = msg;
           } else {
             statusDiv.textContent = "Sweep completed.";
           }
 
           setTimeout(() => {
             statusDiv.textContent = "";
-          }, 3500);
+          }, 4500);
         }
       });
     });
