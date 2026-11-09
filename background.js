@@ -83,10 +83,23 @@ function getBaseDomain(hostname) {
   return parts.slice(-2).join(".");
 }
 
+// Extract exact hostname from a pattern (e.g. https://dmv.ca.gov/* -> dmv.ca.gov)
+function getHostFromPattern(pattern) {
+  if (!pattern) return "";
+  let clean = pattern.replace(/^(?:https?|\*):\/\//, "");
+  clean = clean.replace(/^\[\*\.\]/, "").replace(/^\*\./, "");
+  clean = clean.split("/")[0].split(":")[0].trim().toLowerCase();
+  if (!clean || clean === "*" || clean === "<all_urls>" || clean.includes("chrome")) {
+    return "";
+  }
+  return clean;
+}
+
 // -------------------------------------------------------------
-// Tab Tracking (Maintains tabId -> baseDomain mapping while open)
+// Tab Tracking (Maintains tabId -> baseDomain & active hostnames)
 // -------------------------------------------------------------
 const tabDomainMap = new Map();
+const baseDomainHostsMap = new Map(); // baseDomain -> Set of exact sub-hostnames visited
 
 function trackTab(tabId, url) {
   if (!url) return;
@@ -96,6 +109,10 @@ function trackTab(tabId, url) {
       const base = getBaseDomain(u.hostname);
       if (base) {
         tabDomainMap.set(tabId, base);
+        if (!baseDomainHostsMap.has(base)) {
+          baseDomainHostsMap.set(base, new Set());
+        }
+        baseDomainHostsMap.get(base).add(u.hostname);
       }
     }
   } catch {}
@@ -254,7 +271,15 @@ async function trimWhitelistedCacheStorage(baseDomain) {
     `http://www.${baseDomain}`
   ]);
 
-  // Discover active sub-origins from cookies for this base domain to trim sub-caches
+  // Include visited hostnames
+  if (baseDomainHostsMap.has(baseDomain)) {
+    for (const host of baseDomainHostsMap.get(baseDomain)) {
+      targetOrigins.add(`https://${host}`);
+      targetOrigins.add(`http://${host}`);
+    }
+  }
+
+  // Discover active sub-origins from unpartitioned cookies
   try {
     const cookies = await chrome.cookies.getAll({});
     for (const c of cookies) {
@@ -297,7 +322,15 @@ async function executeTrashCanForDomain(baseDomain) {
     `http://www.${baseDomain}`
   ]);
 
-  // 1. Scan and explicitly delete all cookies matching this base domain
+  // A. Add any sub-hostnames visited in tabs (e.g. dmv.ca.gov, edd.ca.gov)
+  if (baseDomainHostsMap.has(baseDomain)) {
+    for (const host of baseDomainHostsMap.get(baseDomain)) {
+      targetOrigins.add(`https://${host}`);
+      targetOrigins.add(`http://${host}`);
+    }
+  }
+
+  // B. Scan and explicitly delete unpartitioned cookies matching this base domain
   try {
     const allCookies = await chrome.cookies.getAll({});
     for (const c of allCookies) {
@@ -313,21 +346,60 @@ async function executeTrashCanForDomain(baseDomain) {
         // Direct, deterministic cookie deletion
         const cookieUrl = `${c.secure ? "https:" : "http:"}//${cleanHost}${c.path}`;
         try {
-          const removeDetails = {
+          await chrome.cookies.remove({
             url: cookieUrl,
             name: c.name,
             storeId: c.storeId
-          };
-          if (c.partitionKey) {
-            removeDetails.partitionKey = c.partitionKey;
-          }
-          await chrome.cookies.remove(removeDetails);
+          });
         } catch (e) {}
       }
     }
   } catch (e) {}
 
-  // 2. Purge origin-bound storage (IndexedDB, CacheStorage, Service Workers) across all discovered sub-origins
+  // C. Scan and explicitly delete partitioned cookies (CHIPS) matching this base domain
+  try {
+    const partitionedCookies = await chrome.cookies.getAll({ partitionKey: {} });
+    for (const c of partitionedCookies) {
+      if (getBaseDomain(c.domain) === baseDomain) {
+        cookieCountForDomain++;
+
+        const cleanHost = c.domain.replace(/^\./, "");
+        const protocol = c.secure ? "https:" : "http:";
+        targetOrigins.add(`${protocol}//${cleanHost}`);
+        targetOrigins.add(`https://${cleanHost}`);
+        targetOrigins.add(`http://${cleanHost}`);
+
+        const cookieUrl = `${c.secure ? "https:" : "http:"}//${cleanHost}${c.path}`;
+        try {
+          await chrome.cookies.remove({
+            url: cookieUrl,
+            name: c.name,
+            storeId: c.storeId,
+            partitionKey: c.partitionKey
+          });
+        } catch (e) {}
+      }
+    }
+  } catch (e) {}
+
+  // D. Harvest origins from content settings rules matching this base domain
+  for (const type of CONTENT_SETTING_TYPES) {
+    if (!chrome.contentSettings?.[type]) continue;
+    try {
+      const rules = await chrome.contentSettings[type].getAll({});
+      for (const rule of rules) {
+        if (getBaseDomain(rule.primaryPattern) === baseDomain) {
+          const ruleHost = getHostFromPattern(rule.primaryPattern);
+          if (ruleHost) {
+            targetOrigins.add(`https://${ruleHost}`);
+            targetOrigins.add(`http://${ruleHost}`);
+          }
+        }
+      }
+    } catch (e) {}
+  }
+
+  // E. Purge origin-bound storage (IndexedDB, LocalStorage, CacheStorage, Service Workers) across all discovered origins
   try {
     await chrome.browsingData.remove(
       { origins: Array.from(targetOrigins) },
@@ -344,10 +416,10 @@ async function executeTrashCanForDomain(baseDomain) {
     );
   } catch (e) {}
 
-  // 3. Clear all custom permission overrides and 0-byte tombstone records immediately
+  // F. Clear all custom permission overrides and 0-byte tombstone records immediately
   await resetPermissionsForDomain(baseDomain);
 
-  // 4. Follow-up permission pass after 5000ms to clean late service worker or sensor flushes
+  // G. Follow-up permission pass after 5000ms to clean late service worker or sensor flushes
   setTimeout(async () => {
     const [list1, list3] = await Promise.all([
       getList1_Whitelist(),
@@ -357,6 +429,9 @@ async function executeTrashCanForDomain(baseDomain) {
       await resetPermissionsForDomain(baseDomain);
     }
   }, 5000);
+
+  // Clean in-memory visited sub-hosts map for this purged base domain
+  baseDomainHostsMap.delete(baseDomain);
 
   return cookieCountForDomain;
 }
