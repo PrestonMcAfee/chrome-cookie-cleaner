@@ -38,12 +38,23 @@ const DEFAULT_WHITELIST = [
 
 // Common second-level TLD extensions
 const SPECIAL_TLDS = new Set([
-  "co.uk", "org.uk", "ac.uk", "gov.uk",
-  "com.au", "net.au", "org.au",
-  "co.jp", "ne.jp",
-  "co.nz", "org.nz",
-  "com.br",
-  "gc.ca"
+  // UK & Ireland
+  "co.uk", "org.uk", "ac.uk", "gov.uk", "me.uk",
+  // Australia & New Zealand
+  "com.au", "net.au", "org.au", "edu.au", "gov.au",
+  "co.nz", "org.nz", "net.nz", "govt.nz",
+  // Hong Kong, Taiwan, Singapore
+  "com.hk", "edu.hk", "gov.hk", "org.hk", "net.hk", "idv.hk",
+  "com.tw", "edu.tw", "gov.tw", "org.tw",
+  "com.sg", "edu.sg", "gov.sg", "org.sg",
+  // Japan & Korea
+  "co.jp", "ne.jp", "ac.jp", "go.jp",
+  "co.kr", "ne.kr", "or.kr", "re.kr",
+  // Americas & Others
+  "com.br", "org.br", "gov.br",
+  "gc.ca", "gov.ca",
+  "co.in", "net.in", "org.in", "gov.in",
+  "asso.fr", "gouv.fr"
 ]);
 
 // Extract base root domain (e.g. sub.amazon.com -> amazon.com, www.bbc.co.uk -> bbc.co.uk)
@@ -236,16 +247,28 @@ async function resetPermissionsForDomain(baseDomain) {
 // Trim Bloated Caches for Whitelisted Sites (Preserves Cookies/Logins)
 // -------------------------------------------------------------
 async function trimWhitelistedCacheStorage(baseDomain) {
-  const targetOrigins = [
+  const targetOrigins = new Set([
     `https://${baseDomain}`,
     `http://${baseDomain}`,
     `https://www.${baseDomain}`,
-    `http://${baseDomain}`
-  ];
+    `http://www.${baseDomain}`
+  ]);
+
+  // Discover active sub-origins from cookies for this base domain to trim sub-caches
+  try {
+    const cookies = await chrome.cookies.getAll({});
+    for (const c of cookies) {
+      if (getBaseDomain(c.domain) === baseDomain) {
+        const cleanHost = c.domain.replace(/^\./, "");
+        targetOrigins.add(`https://${cleanHost}`);
+        targetOrigins.add(`http://${cleanHost}`);
+      }
+    }
+  } catch (e) {}
 
   try {
     await chrome.browsingData.remove(
-      { origins: targetOrigins },
+      { origins: Array.from(targetOrigins) },
       {
         cache: true,            // Clears cached assets/images
         cacheStorage: true,     // Clears multi-gigabyte ServiceWorker caches
@@ -267,27 +290,47 @@ async function trimWhitelistedCacheStorage(baseDomain) {
 // -------------------------------------------------------------
 async function executeTrashCanForDomain(baseDomain) {
   let cookieCountForDomain = 0;
+  const targetOrigins = new Set([
+    `https://${baseDomain}`,
+    `http://${baseDomain}`,
+    `https://www.${baseDomain}`,
+    `http://www.${baseDomain}`
+  ]);
 
+  // 1. Scan and explicitly delete all cookies matching this base domain
   try {
     const allCookies = await chrome.cookies.getAll({});
     for (const c of allCookies) {
       if (getBaseDomain(c.domain) === baseDomain) {
         cookieCountForDomain++;
+
+        const cleanHost = c.domain.replace(/^\./, "");
+        const protocol = c.secure ? "https:" : "http:";
+        targetOrigins.add(`${protocol}//${cleanHost}`);
+        targetOrigins.add(`https://${cleanHost}`);
+        targetOrigins.add(`http://${cleanHost}`);
+
+        // Direct, deterministic cookie deletion
+        const cookieUrl = `${c.secure ? "https:" : "http:"}//${cleanHost}${c.path}`;
+        try {
+          const removeDetails = {
+            url: cookieUrl,
+            name: c.name,
+            storeId: c.storeId
+          };
+          if (c.partitionKey) {
+            removeDetails.partitionKey = c.partitionKey;
+          }
+          await chrome.cookies.remove(removeDetails);
+        } catch (e) {}
       }
     }
   } catch (e) {}
 
-  const targetOrigins = [
-    `https://${baseDomain}`,
-    `http://${baseDomain}`,
-    `https://www.${baseDomain}`,
-    `http://${baseDomain}`
-  ];
-
-  // 1. Purge all cookies and web storage for the entire root domain
+  // 2. Purge origin-bound storage (IndexedDB, CacheStorage, Service Workers) across all discovered sub-origins
   try {
     await chrome.browsingData.remove(
-      { origins: targetOrigins },
+      { origins: Array.from(targetOrigins) },
       {
         cache: true,
         cacheStorage: true,
@@ -301,10 +344,10 @@ async function executeTrashCanForDomain(baseDomain) {
     );
   } catch (e) {}
 
-  // 2. Clear all custom permission overrides and 0-byte tombstone records immediately
+  // 3. Clear all custom permission overrides and 0-byte tombstone records immediately
   await resetPermissionsForDomain(baseDomain);
 
-  // 3. Follow-up permission pass after 5000ms to clean late service worker or sensor flushes
+  // 4. Follow-up permission pass after 5000ms to clean late service worker or sensor flushes
   setTimeout(async () => {
     const [list1, list3] = await Promise.all([
       getList1_Whitelist(),
